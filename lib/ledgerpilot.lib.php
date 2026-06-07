@@ -1,6 +1,6 @@
 <?php
-/* Copyright (C) 2026		SuperAdmin
- * Copyright (C) 2025       Frédéric France         <frederic.france@free.fr>
+/* Copyright (C) 2026		Melody Meads GmbH
+ * Copyright (C) 2025		Frederic France		<frederic.france@free.fr>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,21 +19,17 @@
 /**
  * \file    ledgerpilot/lib/ledgerpilot.lib.php
  * \ingroup ledgerpilot
- * \brief   Library files with common functions for LedgerPilot
+ * \brief   Common functions for the LedgerPilot module.
  */
 
 /**
- * Prepare admin pages header
+ * Prepare the array of tabs for the module's admin pages.
  *
- * @return array<array{string,string,string}>
+ * @return array<array{string,string,string}> Head array for dol_get_fiche_head()
  */
 function ledgerpilotAdminPrepareHead()
 {
 	global $langs, $conf;
-
-	// global $db;
-	// $extrafields = new ExtraFields($db);
-	// $extrafields->fetch_name_optionals_label('myobject');
 
 	$langs->load("ledgerpilot@ledgerpilot");
 
@@ -45,41 +41,13 @@ function ledgerpilotAdminPrepareHead()
 	$head[$h][2] = 'settings';
 	$h++;
 
-	/*
-	$head[$h][0] = dolBuildUrl(dol_buildpath("/ledgerpilot/admin/myobject_extrafields.php", 1));
-	$head[$h][1] = $langs->trans("ExtraFields");
-	$nbExtrafields = (isset($extrafields->attributes['myobject']['label']) && is_countable($extrafields->attributes['myobject']['label'])) ? count($extrafields->attributes['myobject']['label']) : 0;
-	if ($nbExtrafields > 0) {
-		$head[$h][1] .= '<span class="badge marginleftonlyshort">' . $nbExtrafields . '</span>';
-	}
-	$head[$h][2] = 'myobject_extrafields';
-	$h++;
-
-	$head[$h][0] = dolBuildUrl(dol_buildpath("/ledgerpilot/admin/myobjectline_extrafields.php", 1));
-	$head[$h][1] = $langs->trans("ExtraFieldsLines");
-	$nbExtrafields = (isset($extrafields->attributes['myobjectline']['label']) && is_countable($extrafields->attributes['myobjectline']['label'])) ? count($extrafields->attributes['myobject']['label']) : 0;
-	if ($nbExtrafields > 0) {
-		$head[$h][1] .= '<span class="badge marginleftonlyshort">' . $nbExtrafields . '</span>';
-	}
-	$head[$h][2] = 'myobject_extrafieldsline';
-	$h++;
-	*/
-
 	$head[$h][0] = dolBuildUrl(dol_buildpath("/ledgerpilot/admin/about.php", 1));
 	$head[$h][1] = $langs->trans("About");
 	$head[$h][2] = 'about';
 	$h++;
 
-	// Show more tabs from modules
-	// Entries must be declared in modules descriptor with line
-	//$this->tabs = array(
-	//	'entity:+tabname:Title:@ledgerpilot:/ledgerpilot/mypage.php?id=__ID__'
-	//); // to add new tab
-	//$this->tabs = array(
-	//	'entity:-tabname:Title:@ledgerpilot:/ledgerpilot/mypage.php?id=__ID__'
-	//); // to remove a tab
+	// Let other modules add or remove tabs on these admin pages.
 	complete_head_from_modules($conf, $langs, null, $head, $h, 'ledgerpilot@ledgerpilot');
-
 	complete_head_from_modules($conf, $langs, null, $head, $h, 'ledgerpilot@ledgerpilot', 'remove');
 
 	return $head;

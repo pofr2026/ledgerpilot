@@ -2,7 +2,11 @@
 
 ## Features
 
-Description of the module...
+LedgerPilot links bank transactions to open invoices and, for the rest, proposes an
+accounting account for a human to approve — every approval or correction feeds learning.
+It is a separate, bank-agnostic module that consumes core `llx_bank` lines and integrates
+with the [bankimport](https://github.com/pofr2026/bankimport) module purely through data
+(no code coupling), so it also works on bank lines that never went through bankimport.
 
 <!--
 ![Screenshot ledgerpilot](img/screenshot_ledgerpilot.png?raw=true "LedgerPilot"){imgmd}

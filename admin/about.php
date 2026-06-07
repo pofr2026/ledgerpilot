@@ -1,6 +1,6 @@
 <?php
 /* Copyright (C) 2004-2017 Laurent Destailleur  <eldy@users.sourceforge.net>
- * Copyright (C) 2026		SuperAdmin
+ * Copyright (C) 2026		Melody Meads GmbH
  * Copyright (C) 2024       Frédéric France         <frederic.france@free.fr>
  *
  * This program is free software: you can redistribute it and/or modify
@@ -77,7 +77,6 @@ if (!$user->admin) {
 }
 
 // Parameters
-$action = GETPOST('action', 'aZ09');
 $backtopage = GETPOST('backtopage', 'alpha');
 
 
@@ -91,8 +90,6 @@ $backtopage = GETPOST('backtopage', 'alpha');
 /*
  * View
  */
-
-$form = new Form($db);
 
 $help_url = '';
 $title = "LedgerPilotSetup";

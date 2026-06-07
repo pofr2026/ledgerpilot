@@ -1,0 +1,9 @@
+/vendor/
+.env
+module_descriptor.json
+
+# PHPUnit cache (created by phpunit on test run)
+/.phpunit.cache/
+
+# Local IDE state (per-developer; not shared via the repo)
+/.vscode/

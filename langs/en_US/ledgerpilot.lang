@@ -1,42 +1,19 @@
-# Translation file
+# Translation file for the LedgerPilot module (en_US).
 
 #
-# Generic
+# Module label / description. Keys follow Module<Name>Name / Module<Name>Desc.
 #
-
-# Module label 'ModuleLedgerPilotName'
 ModuleLedgerPilotName = LedgerPilot
-# Module description 'ModuleLedgerPilotDesc'
-ModuleLedgerPilotDesc = LedgerPilot description
+ModuleLedgerPilotDesc = Automated bank-transaction categorization and posting
 
 #
-# Admin page
+# Admin / setup page
 #
 LedgerPilotSetup = LedgerPilot setup
-Settings = Settings
-LedgerPilotSetupPage = LedgerPilot setup page
-NewSection=New section
-LEDGERPILOT_MYPARAM1 = My param 1
-LEDGERPILOT_MYPARAM1Tooltip = My param 1 tooltip
-LEDGERPILOT_MYPARAM2=My param 2
-LEDGERPILOT_MYPARAM2Tooltip=My param 2 tooltip
-
+LedgerPilotSetupPage = Configure the categorization and posting engine here.
 
 #
-# About page
+# Home page
 #
-About = About
-LedgerPilotAbout = About LedgerPilot
-LedgerPilotAboutPage = LedgerPilot about page
-
-#
-# Sample page
-#
-LedgerPilotArea = Home LedgerPilot
-MyPageName = My page name
-
-#
-# Sample widget
-#
-MyWidget = My widget
-MyWidgetDescription = My widget description
+LedgerPilotArea = LedgerPilot
+LedgerPilotIndexIntro = Categorization and posting workspace. The review dashboard arrives with the engine.
