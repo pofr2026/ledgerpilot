@@ -65,7 +65,9 @@ class modLedgerPilot extends DolibarrModules
 
 		// Module label (no space). Translation keys ModuleLedgerPilotName/Desc derive from it.
 		$this->name = "LedgerPilot";
-		$this->description = "Automated bank-transaction categorization and posting";
+		// getDesc() resolves ModuleLedgerPilotDesc from the lang file first; this is only the
+		// last-resort fallback, so the English text lives in one place (langs/*/ledgerpilot.lang).
+		$this->description = "ModuleLedgerPilotDesc";
 		// descriptionlong is left unset on purpose: getDescLong() then falls back to README.md.
 
 		$this->editor_name = 'Melody Meads GmbH';
