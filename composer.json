@@ -1,0 +1,21 @@
+{
+    "name": "melodymeads/ledgerpilot",
+    "description": "LedgerPilot — automated bank-transaction categorization and posting for Dolibarr",
+    "license": "GPL-3.0-or-later",
+    "require-dev": {
+        "phpunit/phpunit": "^10.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "LedgerPilot\\": "core/class/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "LedgerPilot\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit"
+    }
+}
