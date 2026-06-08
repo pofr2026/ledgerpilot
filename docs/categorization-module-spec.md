@@ -147,13 +147,23 @@ correctness-inert and the reap is a §9-retention nicety, not a matching require
 - **Step 2 (L2):** retriever candidate-gen→rerank (MariaDB FULLTEXT for generation, PHP rerank
   trigram/Jaccard on the normalized title); accept only when **top-K agree on the account AND
   similarity > threshold**.
-  - **MATCHER TODO — empty-label guard (required):** the rerank scorer (`LabelSimilarity`) returns
-    **1.0 for an empty vs empty normalized label** by the identity law (a===b → 1.0). An empty
-    normalized label is reachable in practice — an all-punctuation line normalizes to `""` — so the
-    **matcher MUST reject an empty normalized label before scoring** (skip → manual), otherwise two
-    unrelated all-punctuation lines would score a perfect 1.0 and could trip the agreement threshold
-    on garbage. The guard belongs to the matcher, not the pure scorer (which stays a clean
-    mathematical object).
+  - **MATCHER empty-label guard (enforced in `AccountMatcher`):** the rerank scorer
+    (`LabelSimilarity`) returns **1.0 for an empty vs empty normalized label** by the identity law
+    (a===b → 1.0). An empty normalized label is reachable in practice — an all-punctuation line
+    normalizes to `""` — so `AccountMatcher::decide()` **rejects an empty query label before scoring**
+    (→ manual), otherwise two unrelated all-punctuation lines would score a perfect 1.0 and could trip
+    the agreement threshold on garbage. The guard belongs to the matcher, not the pure scorer (which
+    stays a clean mathematical object).
+  - **INDEX-SIDE empty-label guard (required TODO — complements the matcher guard):** the index /
+    UPSERT side must NOT write an empty `normalized_label` into `knowledge` (`source=accepted`), so a
+    candidate can never carry an empty label in the first place. Matcher-side query guard + threshold
+    + this index guard together cover the empty-label surface end to end.
+  - **PARKED — ranking & tie-break on `weight`/`last_seen`:** `AccountMatcher` currently breaks top-K
+    ties by input order (PHP's stable sort). The `knowledge` rows carry `weight` (observation count)
+    and `last_seen` (recency) earmarked for ranking (§5). When those are added to the candidate shape
+    the matcher gains a deterministic tie-break (`weight` desc, then `last_seen` desc — most-confirmed
+    / freshest wins), and only then a tie-break test. Until then we do NOT pin a
+    tie-break-by-input-order test, which would cement a contract the schema contradicts.
 - No resolution → **manual** (feeds the corpus).
 - **Step 3 (L3, v0.2):** LLM — enum from the L2 shortlist + few-shot + an **"unknown"/abstain**
   option; pluggable provider (OpenAI-compatible → local Ollama), **off by default** (data protection).
