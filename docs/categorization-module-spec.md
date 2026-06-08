@@ -137,6 +137,20 @@ correctness-inert and the reap is a §9-retention nicety, not a matching require
 **Per transaction (from the queue):**
 - **Pre-filters:** own transfer (IBAN ∈ own accounts from `llx_bank_account`) → skip. Processor
   (IBAN/name ∈ map) → clearing account per config.
+  - **OWN-TRANSFER FILTER — pure class DONE (`OwnTransferFilter`), wiring TODO:** compares the
+    keystone `counterparty_iban_hmac` (JOIN from `llx_bank`, §4) against the company's own-account
+    IBANs hashed with `IbanPseudonymizer` (`fingerprintOwnAccounts` once per batch + O(1)
+    `isOwnTransfer` per line). At wiring:
+    - **Pepper parity (load-bearing):** read the SAME `conf.php $dolibarr_main_bankimport_iban_pepper`
+      the keystone used (one source — never a LedgerPilot key or a default), and **mirror the
+      keystone's `!empty($pepper)` guard** (as in `BankImport::writeLineRef`): skip the filter
+      entirely when the pepper is unset. `IbanPseudonymizer`/`hash_hmac` do NOT reject an empty pepper
+      (they return a wrong-but-valid-looking hash), and the unit test only pins algorithm parity (both
+      sides get the same literal), so it is blind to a pepper-value mismatch — the guard must live at
+      the conf edge, the pure class stays unvalidated by design.
+    - **Entity + column:** read own IBANs from `llx_bank_account` **scoped on `entity`** (multi-company
+      — else you could mis-skip across companies, like `knowledge`'s `entity`); the full IBAN is in
+      `iban_prefix` (Dolibarr's misleading column name — confirm at wiring), `COALESCE`/skip NULL.
 - **Step 0 (invoice):** direction CRDT→sales / DBIT→purchase (**heuristic, not deterministic** — a
   **supplier refund is CRDT** and a **customer refund is DBIT** → wrong lane; v0.1-acceptable because a
   misroute falls through to **manual**, but a known edge alongside N:1) → **structured QRR/SCOR
