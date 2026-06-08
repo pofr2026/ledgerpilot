@@ -36,9 +36,10 @@ final class OwnTransferFilter
 	 *
 	 * Each IBAN is canonicalised and hashed by IbanPseudonymizer (so formatting — grouped spaces,
 	 * mixed case — never changes the hash, and the hash matches what the keystone wrote for the same
-	 * account). IBAN-less accounts (a cash account, a blank field) surface as '' / whitespace, and
-	 * IbanPseudonymizer::hash() throws on an empty IBAN by design — we treat that exception as the
-	 * "unusable IBAN, skip it" signal rather than duplicating the canonicalisation to detect it.
+	 * account). IBAN-less accounts (a cash account, a blank field) surface as '' / whitespace;
+	 * IbanPseudonymizer::tryHash returns null for those (absorbing hash()'s empty-IBAN exception) so we
+	 * skip them — that "hash an IBAN, skip if unusable" step is shared with ProcessorClearingMap, which
+	 * is why it lives in the one tryHash primitive instead of a try/catch duplicated here.
 	 *
 	 * @param  array<int, string> $rawIbans Own bank-account IBANs (any formatting; from
 	 *                                      llx_bank_account, entity-scoped at the wiring layer).
@@ -49,11 +50,9 @@ final class OwnTransferFilter
 	{
 		$ownHmacs = [];
 		foreach ($rawIbans as $iban) {
-			try {
-				$ownHmacs[IbanPseudonymizer::hash($iban, $pepper)] = true;
-			} catch (\InvalidArgumentException) {
-				// IBAN-less account → not a comparable own account, skip it.
-				continue;
+			$hmac = IbanPseudonymizer::tryHash($iban, $pepper);
+			if ($hmac !== null) {
+				$ownHmacs[$hmac] = true;
 			}
 		}
 

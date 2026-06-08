@@ -46,6 +46,27 @@ final class IbanPseudonymizer
 	}
 
 	/**
+	 * Batch-friendly sibling of hash(): return the HMAC of $iban, or null when the IBAN is empty after
+	 * canonicalisation (where hash() would throw). This lets a caller fingerprinting a list of own /
+	 * processor IBANs skip the IBAN-less entries without a try/catch at every call site — it is the one
+	 * place the "hash an IBAN, skip it if unusable" logic lives, shared by OwnTransferFilter and
+	 * ProcessorClearingMap (DRY). For a usable IBAN it is exactly hash() (same canonicalisation + HMAC).
+	 *
+	 * @param  string      $iban   The IBAN, in any spacing/case (canonicalised before hashing).
+	 * @param  string      $pepper The secret pepper (see hash()).
+	 * @return string|null         The 64-hex HMAC-SHA256 digest, or null if the IBAN is empty after
+	 *                             canonicalisation.
+	 */
+	public static function tryHash(string $iban, string $pepper): ?string
+	{
+		try {
+			return self::hash($iban, $pepper);
+		} catch (\InvalidArgumentException) {
+			return null;
+		}
+	}
+
+	/**
 	 * Canonicalise an IBAN so formatting never changes the hash: strip every non-alphanumeric character
 	 * (spaces, non-breaking spaces, dots, dashes -- any separator) and uppercase. The IBAN alphabet is
 	 * exactly [A-Z0-9], so this is lossless for a valid IBAN and one account maps to exactly one hash

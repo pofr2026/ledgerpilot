@@ -90,4 +90,28 @@ final class IbanPseudonymizerTest extends TestCase
 
 		IbanPseudonymizer::hash('   ', 'pepper-123');
 	}
+
+	/**
+	 * tryHash() is the batch-friendly sibling of hash(), added to DRY the "hash an IBAN, skip it if it
+	 * has no usable IBAN" loop shared by OwnTransferFilter and ProcessorClearingMap. For a valid IBAN it
+	 * returns exactly what hash() returns (same canonicalisation + HMAC → the keystone vector).
+	 */
+	public function testTryHashReturnsTheHashForAValidIban(): void
+	{
+		$this->assertSame(
+			self::KEYSTONE_VECTOR_PEPPER_123,
+			IbanPseudonymizer::tryHash('CH9300762011623852957', 'pepper-123')
+		);
+	}
+
+	/**
+	 * Where hash() THROWS (an IBAN empty after canonicalisation), tryHash() returns null instead — so a
+	 * caller fingerprinting a list of own/processor IBANs can skip the IBAN-less ones without a
+	 * try/catch at every call site (the actual DRY win). Both '' and whitespace-only canonicalise empty.
+	 */
+	public function testTryHashReturnsNullForAnEmptyIban(): void
+	{
+		$this->assertNull(IbanPseudonymizer::tryHash('', 'pepper-123'));
+		$this->assertNull(IbanPseudonymizer::tryHash('   ', 'pepper-123'));
+	}
 }

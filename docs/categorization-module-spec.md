@@ -151,6 +151,19 @@ correctness-inert and the reap is a §9-retention nicety, not a matching require
     - **Entity + column:** read own IBANs from `llx_bank_account` **scoped on `entity`** (multi-company
       — else you could mis-skip across companies, like `knowledge`'s `entity`); the full IBAN is in
       `iban_prefix` (Dolibarr's misleading column name — confirm at wiring), `COALESCE`/skip NULL.
+  - **PROCESSOR→CLEARING MAP — IBAN-keyed pure class DONE (`ProcessorClearingMap`), wiring TODO:**
+    routes a processor payout to its clearing account by matching the keystone `counterparty_iban_hmac`
+    against the configured processor IBANs (`build` HMAC→clearing once per batch + O(1) `clearingFor`
+    per line), reusing `IbanPseudonymizer::tryHash` (shared with the own-transfer filter). Same
+    **pepper-parity** wiring obligation as the own-transfer filter (one keystone-namespaced pepper +
+    `!empty($pepper)` guard). The processor→clearing config (IBAN → clearing account) lives in
+    `llx_const`; the pure map faithfully passes it through, so config-save / wiring validation (not the
+    map) must cover: the clearing account **exists and is active** in `llx_accounting_account`, is
+    **non-empty** (an empty clearing value makes `clearingFor` return `''` — `?? null` only catches a
+    missing key, not an empty value), and that **no IBAN is duplicated** (two formattings of one IBAN
+    canonicalise to a single HMAC → last-wins silently). **NAME-KEYED recognition is deferred to its own cycle:**
+    matching a processor by counterparty name needs whole-token matching (`twint` must not match
+    `twinten`), so it gets a designed red→green rather than a naive substring now.
 - **Step 0 (invoice):** direction CRDT→sales / DBIT→purchase (**heuristic, not deterministic** — a
   **supplier refund is CRDT** and a **customer refund is DBIT** → wrong lane; v0.1-acceptable because a
   misroute falls through to **manual**, but a known edge alongside N:1) → **structured QRR/SCOR
