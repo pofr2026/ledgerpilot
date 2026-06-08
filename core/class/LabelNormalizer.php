@@ -17,9 +17,12 @@ namespace LedgerPilot;
  *   - Whitespace — collapsed Unicode-aware ([\s\p{Z}]), so the non-breaking spaces
  *     (U+00A0) common in bank exports are treated like ordinary spaces instead of
  *     surviving as distinct characters that fragment the corpus.
+ *   - Punctuation — every \p{P} run (incl. & and /, which act as separators in company
+ *     names) becomes a SPACE, never deleted: deleting would glue adjacent tokens and
+ *     diverge from the spaced form. \p{S} symbols (+ $ = …) are intentionally left alone.
  *
- * Punctuation stripping, accent transliteration and removal of volatile date/ref/amount
- * tokens are deliberately out of scope for this step and land in later red→green cycles.
+ * Accent transliteration (café → cafe) and removal of volatile date/ref/amount tokens are
+ * deliberately out of scope for this step and land in later red→green cycles.
  */
 final class LabelNormalizer
 {
@@ -34,8 +37,14 @@ final class LabelNormalizer
 	public static function normalize(string $raw): string
 	{
 		$lower = mb_strtolower($raw, 'UTF-8');
-		$collapsed = preg_replace('/[\s\p{Z}]+/u', ' ', $lower);
+		// Punctuation (\p{P}, incl. & and /) → SPACE, never deleted: deleting would glue
+		// adjacent tokens ("ACME,GmbH" → "acmegmbh") and diverge from the spaced form,
+		// fragmenting the corpus. The whitespace collapse then folds the runs to one space.
+		// Each result is cast to string: a /u pattern returns null on malformed UTF-8, and
+		// the cast keeps the following subject (and trim) a real string.
+		$separated = (string) preg_replace('/\p{P}+/u', ' ', $lower);
+		$collapsed = (string) preg_replace('/[\s\p{Z}]+/u', ' ', $separated);
 
-		return trim((string) $collapsed);
+		return trim($collapsed);
 	}
 }

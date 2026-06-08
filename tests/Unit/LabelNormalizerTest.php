@@ -64,4 +64,48 @@ final class LabelNormalizerTest extends TestCase
 	{
 		$this->assertSame('acme gmbh', LabelNormalizer::normalize("ACME\u{00A0}\u{00A0}GmbH"));
 	}
+
+	/**
+	 * Cycle 2 — punctuation is dropped so the canonical title carries only the
+	 * meaningful tokens. "ACME, GmbH." → "acme gmbh".
+	 */
+	public function testStripsPunctuation(): void
+	{
+		$this->assertSame('acme gmbh', LabelNormalizer::normalize('ACME, GmbH.'));
+	}
+
+	/**
+	 * Cycle 2 invariant (the load-bearing point): punctuation must become a SPACE,
+	 * not vanish — otherwise the spaced and unspaced forms of the same name diverge
+	 * ("ACME,GmbH" → "acmegmbh" vs "ACME, GmbH" → "acme gmbh") and fragment the corpus.
+	 * Both forms must yield the identical canonical key. This locks the invariant
+	 * rather than a single example.
+	 */
+	public function testPunctuationBecomesSpaceNotDeletion(): void
+	{
+		$this->assertSame(
+			LabelNormalizer::normalize('ACME, GmbH'),
+			LabelNormalizer::normalize('ACME,GmbH')
+		);
+	}
+
+	/**
+	 * Cycle 2 must compose with cycle 1, not undo it: accents are still folded by case
+	 * (Ä → ä) and PRESERVED — stripping the accent is the parked cycle 3 transliteration.
+	 */
+	public function testPunctuationStrippingKeepsAccents(): void
+	{
+		$this->assertSame('ärzte zürich', LabelNormalizer::normalize('Ärzte, ZÜRICH'));
+	}
+
+	/**
+	 * Cycle 2 decision (confirmed): "&" and "/" are \p{P} and act as token separators in
+	 * company names, so they fold to a space — never glue. "Müller & Co" → "müller co",
+	 * "A/B Treuhand" → "a b treuhand". (\p{S} symbols like + $ = stay out of scope here.)
+	 */
+	public function testAmpersandAndSlashBecomeSpaces(): void
+	{
+		$this->assertSame('müller co', LabelNormalizer::normalize('Müller & Co'));
+		$this->assertSame('a b treuhand', LabelNormalizer::normalize('A/B Treuhand'));
+	}
 }
