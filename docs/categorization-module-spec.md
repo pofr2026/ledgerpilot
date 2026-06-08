@@ -147,6 +147,13 @@ correctness-inert and the reap is a §9-retention nicety, not a matching require
 - **Step 2 (L2):** retriever candidate-gen→rerank (MariaDB FULLTEXT for generation, PHP rerank
   trigram/Jaccard on the normalized title); accept only when **top-K agree on the account AND
   similarity > threshold**.
+  - **MATCHER TODO — empty-label guard (required):** the rerank scorer (`LabelSimilarity`) returns
+    **1.0 for an empty vs empty normalized label** by the identity law (a===b → 1.0). An empty
+    normalized label is reachable in practice — an all-punctuation line normalizes to `""` — so the
+    **matcher MUST reject an empty normalized label before scoring** (skip → manual), otherwise two
+    unrelated all-punctuation lines would score a perfect 1.0 and could trip the agreement threshold
+    on garbage. The guard belongs to the matcher, not the pure scorer (which stays a clean
+    mathematical object).
 - No resolution → **manual** (feeds the corpus).
 - **Step 3 (L3, v0.2):** LLM — enum from the L2 shortlist + few-shot + an **"unknown"/abstain**
   option; pluggable provider (OpenAI-compatible → local Ollama), **off by default** (data protection).
