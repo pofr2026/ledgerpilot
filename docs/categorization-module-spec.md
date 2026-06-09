@@ -177,6 +177,19 @@ correctness-inert and the reap is a §9-retention nicety, not a matching require
 - **Step 2 (L2):** retriever candidate-gen→rerank (MariaDB FULLTEXT for generation, PHP rerank
   trigram/Jaccard on the normalized title); accept only when **top-K agree on the account AND
   similarity > threshold**.
+  - **CANDIDATE-GEN DONE (`CandidateGenerator`):** pure `buildBooleanQuery` (FULLTEXT BOOLEAN operators
+    → space, symbol-only tokens dropped, `''` when no usable term — FULLTEXT-semantics correctness, NOT
+    SQL safety) + DB `generate` (MATCH … AGAINST in BOOLEAN MODE, OR/recall; `$db->escape` for SQL
+    safety — safe only because the literal's sole source is `buildBooleanQuery`; **strict
+    `entity = $conf->entity`** — the corpus is PII so it stays company-isolated, NOT `getEntity()` which
+    a sharing config could silently widen; `normalized_label IS NOT NULL` excludes L1 rows; LIMIT as
+    int). Spike-verified live (`docs/spikes/candidate_gen_check.php`, 10/10): OR semantics, entity +
+    IS-NOT-NULL exclusion, pathological labels through the real builder don't break the BOOLEAN parser,
+    and the **`innodb_ft_min_token_size=3` caveat live** — a label of only sub-3-char tokens yields 0
+    candidates (no error) and falls through. **OBSERVABILITY known-gap:** `generate` is fail-soft (logs +
+    returns `[]` on a query error), so a broken FULLTEXT index (e.g. after a restore) silently sends all
+    L2 to manual; a per-batch query-error counter in the import summary is a future nicety so "L2 is
+    down" shows up without reading the acceptance rate.
   - **MATCHER empty-label guard (enforced in `AccountMatcher`):** the rerank scorer
     (`LabelSimilarity`) returns **1.0 for an empty vs empty normalized label** by the identity law
     (a===b → 1.0). An empty normalized label is reachable in practice — an all-punctuation line
@@ -292,7 +305,10 @@ Empirically-settled procedure — **ORDER MATTERS, this corrects the earlier "de
   the **spikes** are throwaway *integration* tests on the live dev DB (they must hit native commit/
   reversal, so they mutate real records and self-teardown — `docs/spikes/`); the **production engine**
   is **pure-class PHPUnit** (no live Dolibarr). "Test-first / red→green" applies to both, but only the
-  PHPUnit suite is durable — the spikes are deleted once their findings land in this spec.
+  PHPUnit suite is durable — *exploratory* spikes are deleted once their findings land in this spec, but
+  a spike that verifies a DURABLE server assumption (FULLTEXT `min_token` behaviour, that the BOOLEAN
+  parser tolerates the builder's output) stays in `docs/spikes/` as a re-runnable regression guard —
+  like the keystone checks and `candidate_gen_check.php`.
 - **Native-first / reuse** — `getRemainToPay()`, native commit/reversal, existing `bankimport`
   reconciliation.
 - **Capture corrections** — an accountant's correction is a full training sample (more valuable than an
