@@ -131,4 +131,118 @@ final class ProcessorClearingMapTest extends TestCase
 
 		$this->assertSame(self::CLEARING_ACCOUNT, ProcessorClearingMap::clearingFor($counterpartyHmac, $map));
 	}
+
+	// --- Name-keyed recognition (the deferred half of pre-filter #2) -----------------------------
+	//
+	// Some processors are recognised by their counterparty NAME, not an IBAN. The match is WHOLE-TOKEN
+	// (a processor name must appear as complete token[s] in the normalized label) so a name is never
+	// matched as a substring of a longer word. clearingForName takes an ALREADY-normalized label
+	// (LabelNormalizer output, single-spaced); buildNameIndex normalizes the config names into the same
+	// space. Name-keying is a fallback to the IBAN path — the pipeline tries the IBAN first; the map
+	// itself does not combine them.
+
+	/**
+	 * Whole-token name hit: the configured single-token processor name appears as a complete token in
+	 * the normalized label → route to that processor's clearing account.
+	 */
+	public function testRoutesProcessorByWholeTokenName(): void
+	{
+		$nameIndex = ProcessorClearingMap::buildNameIndex(['twint' => self::CLEARING_ACCOUNT]);
+
+		$this->assertSame(self::CLEARING_ACCOUNT, ProcessorClearingMap::clearingForName('twint ag 8005 zurich', $nameIndex));
+	}
+
+	/**
+	 * THE load-bearing guard: a processor name must NOT match as a substring INSIDE a longer token.
+	 * "twint" is a substring of "twinten" but not a whole token of "twinten gmbh" → no match. A naive
+	 * str_contains/LIKE would mis-route the unrelated company "twinten" to TWINT clearing.
+	 */
+	public function testDoesNotMatchNameInsideALongerToken(): void
+	{
+		$nameIndex = ProcessorClearingMap::buildNameIndex(['twint' => self::CLEARING_ACCOUNT]);
+
+		$this->assertNull(ProcessorClearingMap::clearingForName('twinten gmbh', $nameIndex));
+	}
+
+	/**
+	 * Multi-token processor names work too (the whole-token rule applies to the token SEQUENCE): the
+	 * configured "worldline saferpay" matches when those two tokens appear contiguously in the label.
+	 */
+	public function testRoutesMultiTokenProcessorName(): void
+	{
+		$nameIndex = ProcessorClearingMap::buildNameIndex(['worldline saferpay' => '1098']);
+
+		$this->assertSame('1098', ProcessorClearingMap::clearingForName('worldline saferpay ag', $nameIndex));
+	}
+
+	/**
+	 * Multi-token names require the tokens CONTIGUOUS and IN ORDER (the space-padded probe enforces
+	 * both). A label that separates the configured tokens ("worldline xyz saferpay") or reverses them
+	 * ("saferpay worldline") must NOT match. Regression guard: a future "optimisation" to test the
+	 * tokens independently would start matching these and this pins against it.
+	 */
+	public function testMultiTokenNameRequiresContiguousAndOrderedTokens(): void
+	{
+		$nameIndex = ProcessorClearingMap::buildNameIndex(['worldline saferpay' => '1098']);
+
+		$this->assertNull(ProcessorClearingMap::clearingForName('worldline xyz saferpay ag', $nameIndex));
+		$this->assertNull(ProcessorClearingMap::clearingForName('saferpay worldline', $nameIndex));
+	}
+
+	/**
+	 * A label with no configured processor name → no clearing routing (proceeds to categorisation).
+	 */
+	public function testLabelWithoutProcessorNameHasNoClearing(): void
+	{
+		$nameIndex = ProcessorClearingMap::buildNameIndex(['twint' => self::CLEARING_ACCOUNT]);
+
+		$this->assertNull(ProcessorClearingMap::clearingForName('acme gmbh', $nameIndex));
+	}
+
+	/**
+	 * Empty normalized label (e.g. an all-punctuation line) → no name match. Guarded explicitly rather
+	 * than left to the space-padding to happen to return false.
+	 */
+	public function testEmptyLabelHasNoNameClearing(): void
+	{
+		$nameIndex = ProcessorClearingMap::buildNameIndex(['twint' => self::CLEARING_ACCOUNT]);
+
+		$this->assertNull(ProcessorClearingMap::clearingForName('', $nameIndex));
+	}
+
+	/**
+	 * With no processor names configured, nothing routes by name (empty index).
+	 */
+	public function testEmptyNameIndexHasNoClearing(): void
+	{
+		$this->assertNull(ProcessorClearingMap::clearingForName('twint ag', []));
+	}
+
+	/**
+	 * buildNameIndex normalizes the config names into the label's space (the same-normalization
+	 * counterpart of the IBAN path's same-pepper rule): a config name in mixed case with punctuation
+	 * ("Twint.") must still match the normalized token "twint". Without this the config and the label
+	 * would live in different spaces and never meet.
+	 */
+	public function testBuildNameIndexNormalizesConfigNames(): void
+	{
+		$nameIndex = ProcessorClearingMap::buildNameIndex(['Twint.' => self::CLEARING_ACCOUNT]);
+
+		$this->assertSame(self::CLEARING_ACCOUNT, ProcessorClearingMap::clearingForName('twint ag', $nameIndex));
+	}
+
+	/**
+	 * buildNameIndex skips config names that normalize to "" (a blank or all-punctuation entry),
+	 * otherwise an empty name would space-pad to a match-everything probe. Only the real name survives.
+	 * Here the count is the lock, not behaviour: a stray "" entry would be behaviourally inert anyway
+	 * (it space-pads to '  ', which never occurs in a single-spaced label), so only assertCount reveals
+	 * whether it was actually skipped rather than silently indexed.
+	 */
+	public function testBuildNameIndexSkipsEmptyOrPunctuationOnlyNames(): void
+	{
+		$nameIndex = ProcessorClearingMap::buildNameIndex(['twint' => self::CLEARING_ACCOUNT, '' => '1098', '...' => '1097']);
+
+		$this->assertCount(1, $nameIndex);
+		$this->assertSame(self::CLEARING_ACCOUNT, ProcessorClearingMap::clearingForName('twint ag', $nameIndex));
+	}
 }

@@ -161,9 +161,12 @@ correctness-inert and the reap is a §9-retention nicety, not a matching require
     map) must cover: the clearing account **exists and is active** in `llx_accounting_account`, is
     **non-empty** (an empty clearing value makes `clearingFor` return `''` — `?? null` only catches a
     missing key, not an empty value), and that **no IBAN is duplicated** (two formattings of one IBAN
-    canonicalise to a single HMAC → last-wins silently). **NAME-KEYED recognition is deferred to its own cycle:**
-    matching a processor by counterparty name needs whole-token matching (`twint` must not match
-    `twinten`), so it gets a designed red→green rather than a naive substring now.
+    canonicalise to a single HMAC → last-wins silently). **NAME-KEYED recognition DONE
+    (`buildNameIndex`/`clearingForName`):** matches configured processor names against the normalized
+    label by whole-token (space-bounded) matching, so `twint` does not match `twinten`; reuses
+    `LabelNormalizer` to put config names in the label's space. The pipeline tries the IBAN path first,
+    then the name path. The config-validation note above (non-empty account, no duplicate keys) applies
+    to names too: two config names normalizing to one form → last-wins.
 - **Step 0 (invoice):** direction CRDT→sales / DBIT→purchase (**heuristic, not deterministic** — a
   **supplier refund is CRDT** and a **customer refund is DBIT** → wrong lane; v0.1-acceptable because a
   misroute falls through to **manual**, but a known edge alongside N:1) → **structured QRR/SCOR
