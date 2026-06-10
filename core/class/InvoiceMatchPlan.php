@@ -25,6 +25,13 @@ namespace LedgerPilot;
 final class InvoiceMatchPlan
 {
 	/**
+	 * structuredRefKind for a sales line: the reference is the Swico S1 `/10/` token (= facture.ref).
+	 * Shared with InvoiceMatchExecutor, which gates its DB lookup on this single key (D1) — keeping the
+	 * literal in one place rather than hardcoding 'swico' on both sides.
+	 */
+	public const KIND_SWICO = 'swico';
+
+	/**
 	 * Plan the direction and structured-reference key for a bank line.
 	 *
 	 * @param  float       $amount            The bank line amount, signed (>= 0 incoming, < 0 outgoing).
@@ -46,7 +53,7 @@ final class InvoiceMatchPlan
 			return [
 				'invoiceType'       => 'sales',
 				'structuredRef'     => $ref,
-				'structuredRefKind' => $ref !== null ? 'swico' : null,
+				'structuredRefKind' => $ref !== null ? self::KIND_SWICO : null,
 			];
 		}
 
