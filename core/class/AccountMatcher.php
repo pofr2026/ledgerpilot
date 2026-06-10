@@ -35,7 +35,9 @@ namespace LedgerPilot;
  *
  * PARKED (spec §4): the knowledge rows also carry weight (observation count) and last_seen
  * (recency); when added to the candidate shape, top-K ties will break deterministically by weight
- * desc then last_seen desc. Until then, ties keep input order (PHP's sort is stable since 8.0).
+ * desc, then last_seen desc, then account_number asc — the SHARED L1/L2 ranking established by
+ * IbanAccountLookup (adopt all three levels so L1 and L2 break ties identically). Until then, ties
+ * keep input order (PHP's sort is stable since 8.0).
  */
 final class AccountMatcher
 {

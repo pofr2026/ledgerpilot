@@ -204,8 +204,10 @@ correctness-inert and the reap is a §9-retention nicety, not a matching require
   - **PARKED — ranking & tie-break on `weight`/`last_seen`:** `AccountMatcher` currently breaks top-K
     ties by input order (PHP's stable sort). The `knowledge` rows carry `weight` (observation count)
     and `last_seen` (recency) earmarked for ranking (§5). When those are added to the candidate shape
-    the matcher gains a deterministic tie-break (`weight` desc, then `last_seen` desc — most-confirmed
-    / freshest wins), and only then a tie-break test. Until then we do NOT pin a
+    the matcher gains a deterministic tie-break — the **SHARED L1/L2 ranking** `weight` desc, then
+    `last_seen` desc, then `account_number` asc (most-confirmed / freshest wins; the final key keeps it
+    DB-order-independent). Established by `IbanAccountLookup` (L1); when AccountMatcher (L2) unparks its
+    tie-break it MUST adopt all three levels so L1 and L2 break ties identically. Only then a tie-break test. Until then we do NOT pin a
     tie-break-by-input-order test, which would cement a contract the schema contradicts.
 - No resolution → **manual** (feeds the corpus).
 - **Step 3 (L3, v0.2):** LLM — enum from the L2 shortlist + few-shot + an **"unknown"/abstain**
