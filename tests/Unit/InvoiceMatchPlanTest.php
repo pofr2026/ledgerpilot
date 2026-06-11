@@ -115,4 +115,16 @@ final class InvoiceMatchPlanTest extends TestCase
 			InvoiceMatchPlan::forLine(0.0, null, null, null)
 		);
 	}
+
+	/**
+	 * isSalesDirection() is the single source of the direction rule (forLine routes on it, and
+	 * RefInTitleExecutor gates its sales-only fallback on it). Pin the public boundary directly: zero and
+	 * positive are sales/incoming, a negative is purchase/outgoing.
+	 */
+	public function testIsSalesDirectionBoundary(): void
+	{
+		$this->assertTrue(InvoiceMatchPlan::isSalesDirection(0.0));
+		$this->assertTrue(InvoiceMatchPlan::isSalesDirection(15.02));
+		$this->assertFalse(InvoiceMatchPlan::isSalesDirection(-0.01));
+	}
 }

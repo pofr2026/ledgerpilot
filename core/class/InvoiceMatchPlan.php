@@ -32,6 +32,20 @@ final class InvoiceMatchPlan
 	public const KIND_SWICO = 'swico';
 
 	/**
+	 * Whether a bank line's amount is in the SALES (credit / money in) direction. The single source of
+	 * the direction rule: forLine() routes on it, and RefInTitleExecutor gates its sales-only fallback on
+	 * it (so the boundary — zero counts as sales, "incoming" — lives in one place, pinned by
+	 * testZeroAmountIsSales). A debit (< 0) is the purchase direction.
+	 *
+	 * @param  float $amount The bank line amount, signed.
+	 * @return bool          True for sales / incoming (>= 0), false for purchase / outgoing.
+	 */
+	public static function isSalesDirection(float $amount): bool
+	{
+		return $amount >= 0.0;
+	}
+
+	/**
 	 * Plan the direction and structured-reference key for a bank line.
 	 *
 	 * @param  float       $amount            The bank line amount, signed (>= 0 incoming, < 0 outgoing).
@@ -46,7 +60,7 @@ final class InvoiceMatchPlan
 	 */
 	public static function forLine(float $amount, ?string $structuredRef, ?string $structuredRefType, ?string $invoiceRefToken): array
 	{
-		if ($amount >= 0.0) {
+		if (self::isSalesDirection($amount)) {
 			// SALES (credit / money in): keyed by the Swico token, never the structured QRR/SCOR.
 			$ref = ($invoiceRefToken ?? '') !== '' ? $invoiceRefToken : null;
 
