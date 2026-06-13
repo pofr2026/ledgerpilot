@@ -240,9 +240,13 @@ Thresholds (similarity, batch size, lease timeout) + processor→clearing map �
 **SPIKE #1 — commit without duplicate (`Paiement` AND `PaiementFourn`):**
 - `create()` + `Account::add_url_line()` on the existing line, **both links** (payment + company; for
   purchase use `'payment_supplier'`), **NOT** `addPaymentToBank`.
-- Whole operation in **one outer transaction**: guard-insert into our table **first** (fail-fast on
-  retry), then `create()` + links, then `queue→DONE`, `commit()`. Check the return code of every native
-  call; roll back at the outermost level.
+- Whole operation in **one outer transaction**: the idempotency guard **first** (fail-fast on retry),
+  then `create()` + links, then `commit()`. Check the return code of every native call; roll back at the
+  outermost level. **Realized as `ProposalGuard::transition(approved→booked)` on `proposal.rowid`**, and
+  **the commit tx does NOT touch the `queue`** (reconciled 2026-06-13 with the A1 lifecycle below: the
+  queue row already reached `done` at engine time, when the worker created the proposal, so a
+  `queue→DONE` here would be a no-op at best — or a write on an unrelated/foreign row at worst. The queue
+  tracks engine work; the proposal status tracks the human/commit workflow). See `PaymentCommitService`.
 - **Resolve in the spike:**
   - ✅ `fk_bank` strategy = **keep NULL** (resolved §12.1: ventilation reads `bank_url`, same journal
     for sales + purchase). Bookkeeping works and native `delete()` stays line-safe. Cosmetic only:
