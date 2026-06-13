@@ -55,6 +55,13 @@ const MAX_ATTEMPTS   = 3;          // dead-letter cutoff (mirrors RequeueDecisio
 const BATCH          = 5;
 const WORKER_ID      = 'spike-worker';
 
+// sweep phase: a dedicated entity + a synthetic bank account, so sweep (entity-scoped) only sees the
+// synthetic lines and never real bank data. The bank lines are marked by label for exact cleanup.
+const SWEEP_ENTITY    = 990003;
+const SWEEP_ACCT_REF  = 'LPSWP';
+const SWEEP_LABEL     = 'LP-SWEEP-SPIKE';
+const SWEEP_GRACE_MIN = 10;
+
 // ---------------------------------------------------------------------------
 // Reporting / DB helpers
 // ---------------------------------------------------------------------------
@@ -82,6 +89,18 @@ function teardown_spike()
 {
 	global $db;
 	$db->query('DELETE FROM '.MAIN_DB_PREFIX.'ledgerpilot_queue WHERE entity = '.SPIKE_ENTITY);
+}
+
+/** Remove the sweep phase's synthetic account + bank lines + their queue/line_ref/bank_url rows (by marker). */
+function sweep_cleanup()
+{
+	global $db;
+	$p = MAIN_DB_PREFIX;
+	$db->query("DELETE FROM {$p}bank_url WHERE fk_bank IN (SELECT rowid FROM {$p}bank WHERE label = '".SWEEP_LABEL."')");
+	$db->query("DELETE FROM {$p}bankimport_line_ref WHERE fk_bank IN (SELECT rowid FROM {$p}bank WHERE label = '".SWEEP_LABEL."')");
+	$db->query('DELETE FROM '.$p.'ledgerpilot_queue WHERE entity = '.SWEEP_ENTITY);
+	$db->query("DELETE FROM {$p}bank WHERE label = '".SWEEP_LABEL."'");
+	$db->query("DELETE FROM {$p}bank_account WHERE ref = '".SWEEP_ACCT_REF."' AND entity = ".SWEEP_ENTITY);
 }
 
 /** Enqueue $n pending rows (fk_bank = SPIKE_FK_BASE+1..+n) via the production enqueue; return their rowids, FIFO. */
@@ -296,6 +315,55 @@ function phase_insert_ignore()
 	check('tombstone not resurrected (still done)', spike_status(spike_all_rowids()[0]) === QueueStatus::DONE, 'status='.spike_status(spike_all_rowids()[0]));
 }
 
+/**
+ * sweep(): the grace-window enqueue source (finding B). On a synthetic account, four lines:
+ *   L1 has a line_ref now           → enqueued (structured ref already landed).
+ *   L2 has no line_ref, just created → NOT enqueued (inside the grace; the ref may still be coming).
+ *   L3 has no line_ref, aged past it → enqueued (grace expired; process it anyway).
+ *   L4 has a line_ref but is settled → NOT enqueued (already carries a payment% link).
+ * A second sweep enqueues nothing new (idempotent: the anti-join + INSERT IGNORE).
+ */
+function phase_sweep()
+{
+	global $db;
+	$p = MAIN_DB_PREFIX;
+	sweep_cleanup();
+
+	$db->query("INSERT INTO {$p}bank_account (entity, ref, label, fk_pays, currency_code)"
+		." VALUES (".SWEEP_ENTITY.", '".SWEEP_ACCT_REF."', 'Sweep spike account', 1, 'CHF')");
+	$acct = (int) $db->last_insert_id($p.'bank_account');
+
+	$mkLine = static function ($datecExpr) use ($db, $p, $acct) {
+		$db->query("INSERT INTO {$p}bank (datec, amount, label, fk_account) VALUES ($datecExpr, 10, '".SWEEP_LABEL."', $acct)");
+		return (int) $db->last_insert_id($p.'bank');
+	};
+	$l1 = $mkLine('NOW()');
+	$l2 = $mkLine('NOW()');
+	$l3 = $mkLine('NOW() - INTERVAL '.(SWEEP_GRACE_MIN + 5).' MINUTE');
+	$l4 = $mkLine('NOW()');
+
+	// L1 + L4 carry a line_ref; L4 is also already settled (payment% link).
+	$db->query("INSERT INTO {$p}bankimport_line_ref (fk_bank, date_import) VALUES ($l1, NOW()), ($l4, NOW())");
+	$db->query("INSERT INTO {$p}bank_url (fk_bank, url_id, url, label, type) VALUES ($l4, 0, '', 'pay', 'payment')");
+
+	$enqueued = QueueService::sweep($db, SWEEP_ENTITY, '2000-01-01 00:00:00', SWEEP_GRACE_MIN);
+
+	$isQueued = static function ($lineId) use ($db, $p) {
+		return (int) db_scalar('SELECT COUNT(*) n FROM '.$p.'ledgerpilot_queue WHERE entity = '.SWEEP_ENTITY.' AND fk_bank = '.((int) $lineId)) === 1;
+	};
+
+	check('sweep enqueued exactly 2 lines', $enqueued === 2, 'enqueued='.$enqueued);
+	check('L1 (has line_ref) enqueued', $isQueued($l1));
+	check('L2 (no ref, within grace) NOT enqueued', !$isQueued($l2));
+	check('L3 (no ref, past grace) enqueued', $isQueued($l3));
+	check('L4 (settled) NOT enqueued', !$isQueued($l4));
+
+	$again = QueueService::sweep($db, SWEEP_ENTITY, '2000-01-01 00:00:00', SWEEP_GRACE_MIN);
+	check('second sweep is idempotent (0 new)', $again === 0, 'enqueued='.$again);
+
+	sweep_cleanup();
+}
+
 // ---------------------------------------------------------------------------
 // Driver
 // ---------------------------------------------------------------------------
@@ -313,6 +381,7 @@ $ALL_PHASES = array(
 	'reap'          => 'phase_reap',
 	'release'       => 'phase_release',
 	'insert-ignore' => 'phase_insert_ignore',
+	'sweep'         => 'phase_sweep',
 );
 
 echo "=== SPIKE queue claim/reap  phase=$phaseArg ===\n";

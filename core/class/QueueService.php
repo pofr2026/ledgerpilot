@@ -33,6 +33,15 @@ final class QueueService
 	public const DEFAULT_BATCH_SIZE = 50;
 
 	/**
+	 * Default grace (minutes) before a line WITHOUT a keystone line_ref row is swept anyway. The keystone
+	 * writes line_ref best-effort AFTER the import commit, so a just-imported line may not have its
+	 * structured ref yet; enqueuing it immediately would tombstone it (UNIQUE(fk_bank)) and lock it out of
+	 * Step 0 forever. The grace lets the ref land first; once it expires we enqueue regardless (a line
+	 * whose keystone write failed entirely still has to be processed — it just goes to L1/L2/manual).
+	 */
+	public const DEFAULT_ENQUEUE_GRACE_MINUTES = 10;
+
+	/**
 	 * Enqueue one bank line, idempotently. INSERT IGNORE under UNIQUE(fk_bank) makes a line enqueued at
 	 * most once: a duplicate (incl. a done/dead tombstone) is silently skipped, so a processed line is
 	 * never re-categorized.
@@ -155,5 +164,50 @@ final class QueueService
 		}
 
 		return $status;
+	}
+
+	/**
+	 * Sweep new bank lines into the queue — the enqueue source. A line is enqueued exactly once (INSERT
+	 * IGNORE under UNIQUE(fk_bank) + the anti-join below excludes anything already enqueued, incl. a
+	 * done/dead tombstone). Conditions (spec §4, finding B):
+	 *   - entity scope comes from llx_bank_account (llx_bank has no entity column), so a worker only
+	 *     enqueues its own company's lines.
+	 *   - datec >= $enqueueFromDate: a floor so first activation does not backfill the whole bank history.
+	 *   - line_ref present OR datec older than the grace window: the keystone writes line_ref AFTER the
+	 *     import commit, so a fresh line may lack its structured ref; the grace lets it land before we
+	 *     enqueue (else the line is tombstoned out of Step 0). A ref-less line past the grace is enqueued
+	 *     regardless (it still needs processing — it just falls to L1/L2/manual).
+	 *   - not already settled: skip lines that already carry a payment%-family bank_url link.
+	 * The keystone side-table is read by joining FROM llx_bank (the §4 read contract), never the reverse.
+	 *
+	 * @param  string $enqueueFromDate 'YYYY-MM-DD HH:MM:SS' floor (LEDGERPILOT_ENQUEUE_FROM_DATE).
+	 * @param  int    $graceMinutes    Grace before a ref-less line is swept (DEFAULT_ENQUEUE_GRACE_MINUTES).
+	 * @return int                     How many lines were newly enqueued.
+	 */
+	public static function sweep(\DoliDB $db, int $entity, string $enqueueFromDate, int $graceMinutes): int
+	{
+		$prefix = MAIN_DB_PREFIX;
+
+		$res = $db->query(
+			'INSERT IGNORE INTO '.$prefix.'ledgerpilot_queue (entity, fk_bank, status, attempts, date_creation)'
+			." SELECT ba.entity, b.rowid, '".$db->escape(QueueStatus::PENDING)."', 0, '".$db->idate(dol_now())."'"
+			.' FROM '.$prefix.'bank b'
+			.' INNER JOIN '.$prefix.'bank_account ba ON b.fk_account = ba.rowid'
+			.' LEFT JOIN '.$prefix.'ledgerpilot_queue q ON q.fk_bank = b.rowid'
+			.' LEFT JOIN '.$prefix.'bankimport_line_ref r ON r.fk_bank = b.rowid'
+			.' WHERE ba.entity = '.$entity
+			.' AND q.fk_bank IS NULL'
+			." AND b.datec >= '".$db->escape($enqueueFromDate)."'"
+			.' AND (r.fk_bank IS NOT NULL OR b.datec < (NOW() - INTERVAL '.max(0, $graceMinutes).' MINUTE))'
+			.' AND NOT EXISTS (SELECT 1 FROM '.$prefix.'bank_url u WHERE u.fk_bank = b.rowid'
+			." AND u.type LIKE 'payment%')"
+		);
+		if (!$res) {
+			dol_syslog('LedgerPilot QueueService::sweep failed: '.$db->lasterror(), LOG_ERR);
+
+			return 0;
+		}
+
+		return (int) $db->affected_rows($res);
 	}
 }
