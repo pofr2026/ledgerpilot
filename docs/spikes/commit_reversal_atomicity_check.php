@@ -6,21 +6,23 @@
  * keep holding — the DoliDB depth-counter rollback behaviour (§2), READ COMMITTED scoping, and the exact
  * native bank_url shapes — so it stays in docs/spikes/ and is re-runnable, like candidate_gen_check.php.
  *
- * It is the executable PROTOTYPE of PaymentCommitService / PaymentReversalService (the way bankimport's
- * spike1_commit.php — a separate repo — prototyped commit_ours): it implements the approved transaction
- * skeleton inline and
- * asserts the resulting DB state, so the production services can be written against a proven shape. It
- * consumes the real engine classes CommitDecision (pure verdict) and PaymentFlow (sales/supplier
- * asymmetry) — the same code the services will use.
+ * It DRIVES the production PaymentCommitService / PaymentReversalService end-to-end and asserts the
+ * resulting DB state (the way bankimport's spike1_commit.php — a separate repo — exercised commit_ours):
+ * there is no duplicated transaction skeleton, the spike IS the services' live integration test. The
+ * commit/reverse adapters below delegate to the services; a fault injector (a callable thrown at a named
+ * point inside a service's tx) lets the atomicity phases force a mid-transaction failure.
  *
  * Phases (each self-contained: setup → act → assert DB state → teardown to baseline):
- *   isolation     SET TRANSACTION ... READ COMMITTED before begin(); @@tx_isolation == READ-COMMITTED
- *                 inside the tx, and reverts to REPEATABLE-READ after (per-tx scope, not a SESSION leak).
- *   commit-ok     full commit prototype → COMMITTED; payment + both links on the existing line, invoice
- *                 settled, proposal flipped approved→booked (canonical lock order, guard-update first).
- *   commit-fail   inject a real failure on add_url_line #2 → outer rollback → DB clean (no payment, no
- *                 link, invoice still open) AND proposal NOT booked (still approved): the depth-counter
- *                 footgun handled (§2/§7) — never commit after a failed nested call.
+ *   depth-counter §2 footgun: a NESTED rollback only decrements (row survives); the real ROLLBACK is at
+ *                 the outer level (row gone) — why we never commit after a failed nested call.
+ *   isolation     SET TRANSACTION ... READ COMMITTED before begin(), proven BEHAVIOURALLY (a 2nd
+ *                 connection commits mid-tx): READ COMMITTED sees it, default REPEATABLE READ hides it —
+ *                 so the SET took effect AND auto-reverted (per-tx scope, no pconnect/SESSION leak).
+ *   commit-ok     commit() → COMMITTED; payment + both links on the existing line, invoice settled,
+ *                 proposal flipped approved→booked (canonical lock order, guard-update first).
+ *   commit-fail   inject a failure mid-tx (after create() + link #1) → outer rollback → DB clean (no
+ *                 payment, no link, invoice still open) AND proposal NOT booked (still approved): the
+ *                 depth-counter footgun handled (§2/§7) — never commit after a failed nested call.
  *   idempotency   commit the same proposal twice → second returns ALREADY_DONE (guard-update sees booked).
  *   invalid-state commit a non-approved (rejected) proposal → INVALID_STATE (distinct from ALREADY_DONE).
  *   backstop      a line that already carries a payment% bank_url link → ABORTED_SETTLED (per-line
@@ -63,12 +65,20 @@ require_once DOL_DOCUMENT_ROOT.'/compta/paiement/class/paiement.class.php';
 require_once DOL_DOCUMENT_ROOT.'/fourn/class/fournisseur.facture.class.php';
 require_once DOL_DOCUMENT_ROOT.'/fourn/class/paiementfourn.class.php';
 
-// The production engine classes under test (same ones the services will use).
+// The production engine classes under test — this spike DRIVES them (no duplicated transaction skeleton).
 require_once __DIR__.'/../../core/class/CommitDecision.php';
 require_once __DIR__.'/../../core/class/PaymentFlow.php';
+require_once __DIR__.'/../../core/class/ProposalStatus.php';
+require_once __DIR__.'/../../core/class/CommitResult.php';
+require_once __DIR__.'/../../core/class/ProposalGuard.php';
+require_once __DIR__.'/../../core/class/PaymentCommitService.php';
+require_once __DIR__.'/../../core/class/PaymentReversalService.php';
 
 use LedgerPilot\CommitDecision;
 use LedgerPilot\PaymentFlow;
+use LedgerPilot\CommitResult;
+use LedgerPilot\PaymentCommitService;
+use LedgerPilot\PaymentReversalService;
 
 /** @var DoliDB $db */
 /** @var Conf $conf */
@@ -81,14 +91,14 @@ const PAYMENT_MODE_ID   = 2;       // llx_c_paiement VIR
 const PAYMENT_MODE_CODE = 'VIR';
 const IMPORTED_LABEL    = 'LP-ATOMICITY-IMPORTED';
 
-// CommitResult statuses (the prototype's return contract; the service will mint these as PHP constants).
-const R_COMMITTED       = 'committed';
-const R_ALREADY_DONE    = 'already_done';
-const R_ABORTED_SETTLED = 'aborted_settled';
-const R_ABORTED_OVERPAY = 'aborted_overpay';
-const R_INVALID_STATE   = 'invalid_state';
-const R_FAILED          = 'failed';
-const R_REVERSED        = 'reversed';
+// Result aliases bound to the production enum, so the assertions follow CommitResult if its values change.
+const R_COMMITTED       = CommitResult::COMMITTED;
+const R_ALREADY_DONE    = CommitResult::ALREADY_DONE;
+const R_ABORTED_SETTLED = CommitResult::ABORTED_SETTLED;
+const R_ABORTED_OVERPAY = CommitResult::ABORTED_OVERPAY;
+const R_INVALID_STATE   = CommitResult::INVALID_STATE;
+const R_FAILED          = CommitResult::FAILED;
+const R_REVERSED        = CommitResult::REVERSED;
 
 // Per-flow fixtures: which open invoice each flow posts against (same as spike1).
 function flow_fixture(PaymentFlow $flow)
@@ -203,192 +213,23 @@ function make_payment(User $user, PaymentFlow $flow, $invoiceId, $amount)
 }
 
 // ---------------------------------------------------------------------------
-// THE PROTOTYPE — commit a proposal in one outer tx (the §6/§7 contract).
+// Adapters — the spike now DRIVES the production services (no duplicated transaction skeleton). $flow is
+// kept in the signature only so the existing phase call sites stay unchanged; each service derives the
+// flow, amount and direction from the proposal + bank line itself.
+//
+// The fault injector is a callable thrown at a named point inside the service's tx to prove the OUTER
+// rollback (an injected throw and a native rc<=0 take the same rollback path to the same DB state).
 // ---------------------------------------------------------------------------
-function commit_prototype(User $user, $proposalId, PaymentFlow $flow, $injectFail = null)
-{
-	global $db, $conf;
-	$p   = MAIN_DB_PREFIX;
-	$fix = flow_fixture($flow);
-
-	// Pre-read the proposal's work item (outside the tx; the guard-update below is the first tx statement).
-	$prop = $db->query("SELECT fk_bank, fk_facture, fk_facture_fourn FROM {$p}ledgerpilot_proposal WHERE rowid=".((int) $proposalId));
-	$prow = $db->fetch_object($prop);
-	if (!$prow) {
-		return R_INVALID_STATE;
-	}
-	$fkBank    = (int) $prow->fk_bank;
-	$invoiceId = $flow->isPurchase ? (int) $prow->fk_facture_fourn : (int) $prow->fk_facture;
-
-	// D-C: amount + sign come from the existing bank line (reuse, no hardcoded VIR/total_ttc).
-	$lineAmount = (float) price2num(db_scalar("SELECT amount n FROM {$p}bank WHERE rowid=".$fkBank), 'MT');
-	$amount     = abs($lineAmount);
-
-	// READ COMMITTED for the guarded block, per-tx scope, BEFORE begin() (§7 / D-G).
-	$db->query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
-	$db->begin();
-
-	try {
-		// --- Idempotency guard: FIRST statement. proposal(rowid), approved -> booked. ---
-		$gres = $db->query("UPDATE {$p}ledgerpilot_proposal SET status='booked' WHERE rowid=".((int) $proposalId)." AND status='approved'");
-		if (!$gres) {
-			$db->rollback();
-			return R_FAILED;
-		}
-		if ((int) $db->affected_rows($gres) === 0) {
-			// 0 rows is ambiguous: already booked (idempotent re-entry) vs not-approved (UI/logic error).
-			$st = db_scalar("SELECT status n FROM {$p}ledgerpilot_proposal WHERE rowid=".((int) $proposalId));
-			$db->rollback();
-			return ($st === 'booked') ? R_ALREADY_DONE : R_INVALID_STATE;
-		}
-
-		// --- Canonical lock #2: the bank line (anti-double-spend per line). ---
-		if (!$db->query("SELECT rowid FROM {$p}bank WHERE rowid=".$fkBank." FOR UPDATE")) {
-			$db->rollback();
-			return R_FAILED;
-		}
-
-		// Sign guard (D-C): the line's sign must match the flow direction.
-		if (($lineAmount <=> 0.0) !== $flow->bankSign) {
-			$db->rollback();
-			return R_FAILED;
-		}
-
-		// Per-line backstop UNDER the line lock: a payment% link means the line is already posted.
-		if (url_count($fkBank, "type LIKE 'payment%'") > 0) {
-			$db->rollback();
-			return R_ABORTED_SETTLED;
-		}
-
-		// --- Canonical lock #3: the invoice (overpayment race), then a fresh balance. ---
-		if (!$db->query("SELECT rowid FROM {$p}{$fix['inv_table']} WHERE rowid=".$invoiceId." FOR UPDATE")) {
-			$db->rollback();
-			return R_FAILED;
-		}
-		$invoice = new ($flow->invoiceClass)($db);
-		$invoice->fetch($invoiceId);
-		$remain = (float) $invoice->getRemainToPay();
-
-		$verdict = CommitDecision::decide($remain, $amount);
-		if ($verdict === CommitDecision::ABORT_SETTLED) {
-			$db->rollback();
-			return R_ABORTED_SETTLED;
-		}
-		if ($verdict === CommitDecision::ABORT_OVERPAY) {
-			$db->rollback();
-			return R_ABORTED_OVERPAY;
-		}
-
-		// --- Native posting: create() + both links on the EXISTING line (NOT addPaymentToBank). ---
-		$paiement = make_payment($user, $flow, $invoiceId, $amount);
-
-		$acc = new Account($db);
-		$acc->fetch(TEST_ACCOUNT_ID);
-
-		// Link #1: payment / payment_supplier.
-		$r1 = $acc->add_url_line($fkBank, $paiement->id, DOL_URL_ROOT.$flow->paymentUrlPath, PaymentFlow::PAYMENT_LABEL, $flow->bankMode);
-		if ($r1 <= 0) {
-			$db->rollback();
-			return R_FAILED;
-		}
-
-		// Link #2: company. INJECT FAIL HERE — an over-length type (>24) trips STRICT_TRANS_TABLES so the
-		// real native add_url_line returns -1 (a genuine "second native call failed", not a simulated one).
-		$invoice->fetch_thirdparty();
-		$companyType = ($injectFail === 'link2') ? str_repeat('X', 30) : PaymentFlow::COMPANY_LINK_TYPE;
-		$r2 = $acc->add_url_line($fkBank, $invoice->thirdparty->id, DOL_URL_ROOT.$flow->companyUrlPath, (string) $invoice->thirdparty->name, $companyType);
-		if ($r2 <= 0) {
-			$db->rollback();
-			return R_FAILED;
-		}
-
-		// Settle the invoice when the amount covers the balance.
-		if ($verdict === CommitDecision::PROCEED_FULL) {
-			if ($invoice->setPaid($user) <= 0) {
-				$db->rollback();
-				return R_FAILED;
-			}
-		}
-
-		$db->commit();
-		return R_COMMITTED;
-	} catch (Exception $e) {
-		$db->rollback();
-		echo "      (commit_prototype exception: ".$e->getMessage().")\n";
-		return R_FAILED;
-	}
-}
-
-// ---------------------------------------------------------------------------
-// THE PROTOTYPE — reverse a booked proposal in one outer tx (the §6 SPIKE #2 order, M2 rigor).
-// ---------------------------------------------------------------------------
-function reverse_prototype(User $user, $proposalId, PaymentFlow $flow, $injectFail = null)
+function commit_prototype(User $user, $proposalId, PaymentFlow $flow, ?callable $faultInjector = null)
 {
 	global $db;
-	$p = MAIN_DB_PREFIX;
+	return PaymentCommitService::commit($db, $user, (int) $proposalId, $faultInjector);
+}
 
-	$prop = $db->query("SELECT fk_bank, fk_facture, fk_facture_fourn FROM {$p}ledgerpilot_proposal WHERE rowid=".((int) $proposalId));
-	$prow = $db->fetch_object($prop);
-	if (!$prow) {
-		return R_INVALID_STATE;
-	}
-	$fkBank    = (int) $prow->fk_bank;
-	$invoiceId = $flow->isPurchase ? (int) $prow->fk_facture_fourn : (int) $prow->fk_facture;
-
-	// The payment to reverse = the url_id on our payment link (reuse the native trace, like the backstop).
-	$paymentId = (int) db_scalar("SELECT url_id n FROM {$p}bank_url WHERE fk_bank=".$fkBank." AND type='".$db->escape($flow->bankMode)."'");
-
-	$db->query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
-	$db->begin();
-
-	try {
-		// Mirror guard: booked -> reversed, FIRST. per-proposal idempotency without "does the payment exist?".
-		$gres = $db->query("UPDATE {$p}ledgerpilot_proposal SET status='reversed' WHERE rowid=".((int) $proposalId)." AND status='booked'");
-		if (!$gres) {
-			$db->rollback();
-			return R_FAILED;
-		}
-		if ((int) $db->affected_rows($gres) === 0) {
-			$st = db_scalar("SELECT status n FROM {$p}ledgerpilot_proposal WHERE rowid=".((int) $proposalId));
-			$db->rollback();
-			return ($st === 'reversed') ? R_ALREADY_DONE : R_INVALID_STATE;
-		}
-
-		// setUnpaid() FIRST — native delete() refuses on a closed/paid invoice (§6 SPIKE #2 order).
-		$inv = new ($flow->invoiceClass)($db);
-		$inv->fetch($invoiceId);
-		if ($inv->setUnpaid($user) <= 0) {
-			$db->rollback();
-			return R_FAILED;
-		}
-
-		// delete() our payment (fetched fresh; fk_bank=NULL/0 => the imported line is line-safe).
-		$pay = new ($flow->paymentClass)($db);
-		$pay->fetch($paymentId);
-		if ($pay->delete($user) <= 0) {
-			$db->rollback();
-			return R_FAILED;
-		}
-
-		// INJECT FAIL between delete() and the link cleanup (M2's critical window).
-		if ($injectFail === 'before-cleanup') {
-			throw new Exception('injected mid-reversal failure');
-		}
-
-		// Manually remove our bank_url links — delete() never touches them.
-		$del = $db->query("DELETE FROM {$p}bank_url WHERE fk_bank=".$fkBank." AND type IN ('".$db->escape($flow->bankMode)."','company')");
-		if (!$del) {
-			$db->rollback();
-			return R_FAILED;
-		}
-
-		$db->commit();
-		return R_REVERSED;
-	} catch (Exception $e) {
-		$db->rollback();
-		echo "      (reverse_prototype exception: ".$e->getMessage().")\n";
-		return R_FAILED;
-	}
+function reverse_prototype(User $user, $proposalId, PaymentFlow $flow, ?callable $faultInjector = null)
+{
+	global $db;
+	return PaymentReversalService::reverse($db, $user, (int) $proposalId, $faultInjector);
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +254,21 @@ function teardown()
 	}
 	foreach ($CREATED_PROPOSALS as $pid) {
 		$db->query("DELETE FROM {$p}ledgerpilot_proposal WHERE rowid = ".((int) $pid));
+	}
+
+	// Delete any payments posted against the fixture invoices. The service creates payments INTERNALLY
+	// (not via CREATED_PAYMENTS), and setUnpaid() alone would leave them as phantom payments that keep
+	// getRemainToPay()=0 — poisoning later phases. Baseline has none, so every payment on 240/5 is ours.
+	$payMaps = array(
+		array('link' => 'paiement_facture',              'pay' => 'paiement',      'fk' => 'fk_paiement',      'inv' => 'fk_facture',      'id' => 240),
+		array('link' => 'paiementfourn_facturefourn',    'pay' => 'paiementfourn', 'fk' => 'fk_paiementfourn', 'inv' => 'fk_facturefourn', 'id' => 5),
+	);
+	foreach ($payMaps as $m) {
+		$r = $db->query("SELECT DISTINCT {$m['fk']} AS pid FROM {$p}{$m['link']} WHERE {$m['inv']} = ".$m['id']);
+		while ($r && ($o = $db->fetch_object($r))) {
+			$db->query("DELETE FROM {$p}{$m['link']} WHERE {$m['fk']} = ".((int) $o->pid));
+			$db->query("DELETE FROM {$p}{$m['pay']} WHERE rowid = ".((int) $o->pid));
+		}
 	}
 
 	// Reopen both fixture invoices via the native setUnpaid() (idempotent if already open).
@@ -445,6 +301,33 @@ function assert_fixtures_or_abort()
 // ---------------------------------------------------------------------------
 // PHASES
 // ---------------------------------------------------------------------------
+
+/**
+ * Prove the DoliDB depth-counter footgun directly (§2): a NESTED rollback only DECREMENTS the counter (no
+ * real ROLLBACK is issued); the real ROLLBACK happens only at the outermost level. This is WHY the
+ * services must never commit after a failed nested call. The atomicity phases inject via a throw (and
+ * add_url_line is a plain INSERT with no nested tx), so this is the only phase that exercises the
+ * decrement-only behaviour — a flow-independent, DB-only check on a throwaway bank_url row.
+ */
+function phase_depth_counter()
+{
+	global $db;
+	$p = MAIN_DB_PREFIX;
+	$marker = 'LP-DEPTH-'.uniqid();
+
+	$db->begin();                          // depth 0 -> 1 (real BEGIN)
+	$db->query("INSERT INTO {$p}bank_url (fk_bank, url_id, url, label, type) VALUES (0, 0, '', '".$db->escape($marker)."', 'LPDEPTH')");
+	$id = (int) $db->last_insert_id("{$p}bank_url");
+	$db->begin();                          // depth 1 -> 2 (NO real BEGIN)
+	$db->rollback();                       // depth 2 -> 1 (DECREMENT ONLY — no real ROLLBACK)
+
+	$present = (int) db_scalar("SELECT COUNT(*) n FROM {$p}bank_url WHERE rowid=".$id);
+	check('§2 nested rollback only decrements (row still present)', $present === 1, "present=$present");
+
+	$db->rollback();                       // depth 1 -> 0 (real ROLLBACK)
+	$gone = (int) db_scalar("SELECT COUNT(*) n FROM {$p}bank_url WHERE rowid=".$id);
+	check('§2 outer rollback really rolls back (row gone)', $gone === 0, "gone=".($gone === 0 ? 'yes' : 'no'));
+}
 
 /**
  * Prove the isolation contract BEHAVIOURALLY, not via @@tx_isolation. Finding: next-transaction
@@ -528,13 +411,6 @@ function phase_commit_fail(User $user, PaymentFlow $flow)
 	global $db;
 	$p = MAIN_DB_PREFIX;
 	$fix = flow_fixture($flow);
-
-	// Durable-assumption guard: the injection (an over-length bank_url.type) only raises a real error
-	// under STRICT_TRANS_TABLES; without it MariaDB would truncate (warning) and add_url_line would pass.
-	// The phase would then FAIL loudly (never a false green), but make the dependency explicit.
-	$mode = (string) db_scalar("SELECT @@sql_mode n");
-	check('STRICT_TRANS_TABLES active (injection relies on it)', strpos($mode, 'STRICT_TRANS_TABLES') !== false, "sql_mode=$mode");
-
 	$amount = (float) price2num(db_scalar("SELECT total_ttc n FROM {$p}{$fix['inv_table']} WHERE rowid=".$fix['invoice_id']), 'MT');
 
 	$line = setup_imported_line($user, $amount, $flow);
@@ -542,8 +418,15 @@ function phase_commit_fail(User $user, PaymentFlow $flow)
 
 	$paymentsBefore = (int) db_scalar("SELECT COUNT(*) n FROM {$p}".($flow->isPurchase ? 'paiementfourn' : 'paiement'));
 
-	$res = commit_prototype($user, $prop, $flow, 'link2');
-	check('result == FAILED (injected on add_url_line #2)', $res === R_FAILED, "res=$res");
+	// Inject a failure AFTER link #1 (create() + payment link already done) → the service's catch rolls the
+	// whole tx back at the OUTER level. A native rc<=0 on link #2 takes the identical rollback path.
+	$injector = function (string $point) {
+		if ($point === PaymentCommitService::FAULT_BEFORE_LINK2) {
+			throw new Exception('injected commit failure');
+		}
+	};
+	$res = commit_prototype($user, $prop, $flow, $injector);
+	check('result == FAILED (injected mid-tx, after create() + link #1)', $res === R_FAILED, "res=$res");
 
 	// Atomicity: the whole tx rolled back at the OUTER level (depth-counter footgun handled).
 	$paymentsAfter = (int) db_scalar("SELECT COUNT(*) n FROM {$p}".($flow->isPurchase ? 'paiementfourn' : 'paiement'));
@@ -708,7 +591,12 @@ function phase_reverse_fail(User $user, PaymentFlow $flow)
 	commit_prototype($user, $prop, $flow);
 	$paymentId = (int) db_scalar("SELECT url_id n FROM {$p}bank_url WHERE fk_bank=".$line." AND type='".$flow->bankMode."'");
 
-	$res = reverse_prototype($user, $prop, $flow, 'before-cleanup');
+	$injector = function (string $point) {
+		if ($point === PaymentReversalService::FAULT_BEFORE_CLEANUP) {
+			throw new Exception('injected mid-reversal failure');
+		}
+	};
+	$res = reverse_prototype($user, $prop, $flow, $injector);
 	check('result == FAILED (injected between delete and cleanup)', $res === R_FAILED, "res=$res");
 
 	// M2: single outer tx => fully untouched, NEVER an orphan state.
@@ -796,7 +684,15 @@ assert_fixtures_or_abort();
 
 echo "=== SPIKE commit/reversal atomicity  phase=$phaseArg  type=$typeArg ===\n";
 
-// The isolation phase is flow-independent — run it once when requested.
+// The depth-counter and isolation phases are flow-independent — run each once when requested.
+if ($phaseArg === 'all' || $phaseArg === 'depth-counter') {
+	echo "  [phase depth-counter]\n";
+	try {
+		phase_depth_counter();
+	} catch (Exception $e) {
+		check('depth-counter phase no exception', false, $e->getMessage());
+	}
+}
 if ($phaseArg === 'all' || $phaseArg === 'isolation') {
 	echo "  [phase isolation]\n";
 	try {
