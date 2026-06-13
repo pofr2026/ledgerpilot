@@ -25,7 +25,7 @@ CREATE TABLE llx_ledgerpilot_proposal(
 	rowid				integer AUTO_INCREMENT PRIMARY KEY,
 	entity				integer DEFAULT 1 NOT NULL,				-- multi-company scope (getEntity())
 	fk_bank				integer NOT NULL,						-- llx_bank.rowid this proposal is for
-	layer				varchar(16) NOT NULL,					-- step0|l1|l2 (mode discriminator; PHP constants)
+	layer				varchar(16) NOT NULL,					-- step0|l1|l2|clearing (mode discriminator; ProposalLayer)
 	status				varchar(16) DEFAULT 'pending' NOT NULL,	-- pending|approved|rejected|booked|reversed|exception (ProposalStatus)
 	proposed_account	varchar(32),							-- account track: llx_accounting_account.account_number; NULL for step0
 	fk_facture			integer,								-- invoice track (sales); NULL otherwise
